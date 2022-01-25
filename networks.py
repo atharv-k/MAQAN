@@ -9,158 +9,157 @@ from netsquid.components.models import FibreDelayModel, FibreLossModel, DepolarN
 from netsquid.protocols.nodeprotocols import LocalProtocol, NodeProtocol, Signals
 from netsquid.components.cqchannel import CombinedChannel
 from netsquid.protocols import Protocol, Signals
-import QKD as qkd
+import BB84 as qkd
 import b92
 from pydynaa.core import SimulationEngine
 import random as rd
 
-
-class AliceProtocol(NodeProtocol):
-
-    n = 10000
-
-    def __init__(self, node, port_1, channel):
-        """
-
-        :type port_2: object
-        """
-        super().__init__(node)
-        self.port_name = port_1
-        self.connected_channel = channel
-        self.matching_keybits = None
-        self.send_evtype = pydynaa.EventType("Send", "Send the prepared qubit")
-        self.time_stamp = []
-        self.binary_key = {}
-        self.alice_basis = {}
-        self.delay = 2
-        self.time_stamp_label = "TIME_STAMP"
-        self.add_signal(self.time_stamp_label,event_type=pydynaa.EventType("The final time stamp", "The final time stamp to be sent"))
-
-    def _Assign_Quantum_State(self, qubit):
-        if rd.randint(1, 2) == 1:
-            basis = "|Z >"
-            if rd.randint(0, 1) == 0:
-                assign_qstate(qubit, ns.qubits.ketstates.s0)
-                binary = 0
-            else:
-                assign_qstate(qubit, ns.qubits.ketstates.s1)
-                binary = 1
-        else:
-            basis = "|X >"
-            if rd.randint(0, 1) == 0:
-                assign_qstate(qubit, ns.qubits.ketstates.h0)
-                binary = 0
-            else:
-                assign_qstate(qubit, ns.qubits.ketstates.h1)
-                binary = 1
-
-        return (qubit, basis, binary)
-
-    def _create_qubit(self, event):
-        qubit = create_qubits(num_qubits=1, system_name="Q")
-        #print(qubit)
-        q, basis, binary = self._Assign_Quantum_State(qubit)
-        self.time_stamp.append(ns.sim_time())
-        self.alice_basis[ns.sim_time()] = basis
-        self.binary_key[ns.sim_time()] = binary
-        self.node.ports[self.port_name].tx_output((None, q))
-
-    def run(self):
-        print("Alice protocol started")
-        port_qout_bob = self.node.ports[self.port_name]
-        sim_engine = SimulationEngine()
-        qubit_create = pydynaa.EventHandler(self._create_qubit)
-        for i in range(n):
-            self._schedule_after(i * self.delay, self.send_evtype)
-            self._wait(qubit_create, entity=self, event_type=self.send_evtype)
-
-        yield self.await_signal(self.receiver_protocol, Signals.READY)
-        yield self.await_port_input(port_qout_bob)
-        [(Bob_Basis, _)] = port_qout_bob.rx_input().items
-        bob_basis = {keys - self.connected_channel.models['delay_model'].generate_delay(**{'length': self.connected_channel.properties['length']}): Bob_Basis[keys] for keys in Bob_Basis}
-        exact_basis = {k: self.alice_basis[k] for k in self.alice_basis if k in bob_basis and self.alice_basis[k] == bob_basis[k]}
-        matching_time_stamps = [key + self.connected_channel.models['delay_model'].generate_delay(**{'length': self.connected_channel.properties['length']}) for key in exact_basis]
-        self.matching_keybits = {key: self.binary_key.get(key) for key in exact_basis}
-        self.send_signal(self.time_stamp_label)
-        port_qout_bob.tx_output((matching_time_stamps, None))
-        print(f"the time at which alice sent the labels {ns.sim_time()}")
-
-class BobProtocol(NodeProtocol):
-
-    n = 10000
-
-    def __init__(self, node, port_1):
-        super().__init__(node=node)
-        self.port_name = port_1
-        self.list_length = None
-        self.binary_key = None
-        self.bob_basis = None
-        self.matching_keybits = None
-        self.recv_evtype = None
-        self.bob_time_stamp = None
-        self.bob_signal_label = "BASIS_READY"
-        self.add_signal("BASIS_READY", event_type=pydynaa.EventType("The Bob's basis", "The Bob's basis are ready"))
-
-    def _Measure_Quantum_State(self, node, qubit, i):
-
-        if qubit is None:
-            return ("None", "None")
-        else:
-            node.qmemory.put(qubit, positions=i)
-            if rd.randint(1, 2) == 1:
-                basis = "|Z >"
-                [m], _ = node.qmemory.measure(positions=[i], observable=ns.Z)
-                bin_key = m
-            else:
-                basis = "|X >"
-                [m], _ = node.qmemory.measure(positions=[i], observable=ns.X)
-                bin_key = m
-
-            return (basis, bin_key)
-
-    def run(self):
-        print("Bob protocol started")
-        port_qin_alice = self.node.ports[self.port_name]
-        sim_engine = SimulationEngine()
-        recv_evt = pydynaa.EventType("Recieve qubit", "Recieve the prepared qubit")
-        self.recv_evtype = recv_evt
-        recv_evexpr = pydynaa.EventExpression(source=self, event_type=self.recv_evtype)
-        wait_evexpr = self.await_port_input(port_qin_alice)
-        time_stamp = []
-        basis = {}
-        bin_key = {}
-        i = 0
-        while i < n:
-            evexpr = yield recv_evexpr | wait_evexpr
-            if evexpr.second_term.value:
-                [(_, [key])] = port_qin_alice.rx_input().items
-                basis[sim_engine.current_time], bin_key[sim_engine.current_time] = self._Measure_Quantum_State(self.node, key,i)
-                time_stamp.append(sim_engine.current_time)
-                i = i + 1
-                self._schedule_at(sim_engine.current_time + i, self.recv_evtype)
-            else:
-                i = i + 1
-                self._schedule_at(sim_engine.current_time + i, self.recv_evtype)
-
-        self.bob_basis = {key: basis[key] for key in basis if basis[key] != "None"}
-        self.binary_key = {key: bin_key[key] for key in bin_key if bin_key[key] != "None"}
-        self.bob_time_stamp = time_stamp
-        self.send_signal(Signals.READY)
-        port_qin_alice.tx_output((self.bob_basis, None))
-        print(f"time at which bob sent his basis {ns.sim_time()}")
-        for position in self.node.qmemory.used_positions:
-            self.node.qmemory.discard(position)
-
-
-        ev_exp = self.await_signal(self.sender_protocol, self.sender_protocol.time_stamp_label)
-        yield ev_exp
-        print(f"The time when signal was recieved is {ns.sim_time()}")
-        yield self.await_port_input(port_qin_alice)
-        print(f"time at which bob recieved his timestamps {ns.sim_time()}")
-        [(matching_time_stamp, _)] = port_qin_alice.rx_input().items
-        print(matching_time_stamp)
-        self.matching_keybits = {key: self.binary_key[key] for key in matching_time_stamp}
-        self.list_length = len(self.matching_keybits)
+# class AliceProtocol(NodeProtocol):
+#
+#     n = 10000
+#
+#     def __init__(self, node, port_1, channel):
+#         """
+#
+#         :type port_2: object
+#         """
+#         super().__init__(node)
+#         self.port_name = port_1
+#         self.connected_channel = channel
+#         self.matching_keybits = None
+#         self.send_evtype = pydynaa.EventType("Send", "Send the prepared qubit")
+#         self.time_stamp = []
+#         self.binary_key = {}
+#         self.alice_basis = {}
+#         self.delay = 2
+#         self.time_stamp_label = "TIME_STAMP"
+#         self.add_signal(self.time_stamp_label,event_type=pydynaa.EventType("The final time stamp", "The final time stamp to be sent"))
+#
+#     def _Assign_Quantum_State(self, qubit):
+#         if rd.randint(1, 2) == 1:
+#             basis = "|Z >"
+#             if rd.randint(0, 1) == 0:
+#                 assign_qstate(qubit, ns.qubits.ketstates.s0)
+#                 binary = 0
+#             else:
+#                 assign_qstate(qubit, ns.qubits.ketstates.s1)
+#                 binary = 1
+#         else:
+#             basis = "|X >"
+#             if rd.randint(0, 1) == 0:
+#                 assign_qstate(qubit, ns.qubits.ketstates.h0)
+#                 binary = 0
+#             else:
+#                 assign_qstate(qubit, ns.qubits.ketstates.h1)
+#                 binary = 1
+#
+#         return (qubit, basis, binary)
+#
+#     def _create_qubit(self, event):
+#         qubit = create_qubits(num_qubits=1, system_name="Q")
+#         #print(qubit)
+#         q, basis, binary = self._Assign_Quantum_State(qubit)
+#         self.time_stamp.append(ns.sim_time())
+#         self.alice_basis[ns.sim_time()] = basis
+#         self.binary_key[ns.sim_time()] = binary
+#         self.node.ports[self.port_name].tx_output((None, q))
+#
+#     def run(self):
+#         print("Alice protocol started")
+#         port_qout_bob = self.node.ports[self.port_name]
+#         sim_engine = SimulationEngine()
+#         qubit_create = pydynaa.EventHandler(self._create_qubit)
+#         for i in range(n):
+#             self._schedule_after(i * self.delay, self.send_evtype)
+#             self._wait(qubit_create, entity=self, event_type=self.send_evtype)
+#
+#         yield self.await_signal(self.receiver_protocol, Signals.READY)
+#         yield self.await_port_input(port_qout_bob)
+#         [(Bob_Basis, _)] = port_qout_bob.rx_input().items
+#         bob_basis = {keys - self.connected_channel.models['delay_model'].generate_delay(**{'length': self.connected_channel.properties['length']}): Bob_Basis[keys] for keys in Bob_Basis}
+#         exact_basis = {k: self.alice_basis[k] for k in self.alice_basis if k in bob_basis and self.alice_basis[k] == bob_basis[k]}
+#         matching_time_stamps = [key + self.connected_channel.models['delay_model'].generate_delay(**{'length': self.connected_channel.properties['length']}) for key in exact_basis]
+#         self.matching_keybits = {key: self.binary_key.get(key) for key in exact_basis}
+#         self.send_signal(self.time_stamp_label)
+#         port_qout_bob.tx_output((matching_time_stamps, None))
+#         print(f"the time at which alice sent the labels {ns.sim_time()}")
+#
+# class BobProtocol(NodeProtocol):
+#
+#     n = 10000
+#
+#     def __init__(self, node, port_1):
+#         super().__init__(node=node)
+#         self.port_name = port_1
+#         self.list_length = None
+#         self.binary_key = None
+#         self.bob_basis = None
+#         self.matching_keybits = None
+#         self.recv_evtype = None
+#         self.bob_time_stamp = None
+#         self.bob_signal_label = "BASIS_READY"
+#         self.add_signal("BASIS_READY", event_type=pydynaa.EventType("The Bob's basis", "The Bob's basis are ready"))
+#
+#     def _Measure_Quantum_State(self, node, qubit, i):
+#
+#         if qubit is None:
+#             return ("None", "None")
+#         else:
+#             node.qmemory.put(qubit, positions=i)
+#             if rd.randint(1, 2) == 1:
+#                 basis = "|Z >"
+#                 [m], _ = node.qmemory.measure(positions=[i], observable=ns.Z)
+#                 bin_key = m
+#             else:
+#                 basis = "|X >"
+#                 [m], _ = node.qmemory.measure(positions=[i], observable=ns.X)
+#                 bin_key = m
+#
+#             return (basis, bin_key)
+#
+#     def run(self):
+#         print("Bob protocol started")
+#         port_qin_alice = self.node.ports[self.port_name]
+#         sim_engine = SimulationEngine()
+#         recv_evt = pydynaa.EventType("Recieve qubit", "Recieve the prepared qubit")
+#         self.recv_evtype = recv_evt
+#         recv_evexpr = pydynaa.EventExpression(source=self, event_type=self.recv_evtype)
+#         wait_evexpr = self.await_port_input(port_qin_alice)
+#         time_stamp = []
+#         basis = {}
+#         bin_key = {}
+#         i = 0
+#         while i < n:
+#             evexpr = yield recv_evexpr | wait_evexpr
+#             if evexpr.second_term.value:
+#                 [(_, [key])] = port_qin_alice.rx_input().items
+#                 basis[sim_engine.current_time], bin_key[sim_engine.current_time] = self._Measure_Quantum_State(self.node, key,i)
+#                 time_stamp.append(sim_engine.current_time)
+#                 i = i + 1
+#                 self._schedule_at(sim_engine.current_time + i, self.recv_evtype)
+#             else:
+#                 i = i + 1
+#                 self._schedule_at(sim_engine.current_time + i, self.recv_evtype)
+#
+#         self.bob_basis = {key: basis[key] for key in basis if basis[key] != "None"}
+#         self.binary_key = {key: bin_key[key] for key in bin_key if bin_key[key] != "None"}
+#         self.bob_time_stamp = time_stamp
+#         self.send_signal(Signals.READY)
+#         port_qin_alice.tx_output((self.bob_basis, None))
+#         print(f"time at which bob sent his basis {ns.sim_time()}")
+#         for position in self.node.qmemory.used_positions:
+#             self.node.qmemory.discard(position)
+#
+#
+#         ev_exp = self.await_signal(self.sender_protocol, self.sender_protocol.time_stamp_label)
+#         yield ev_exp
+#         print(f"The time when signal was recieved is {ns.sim_time()}")
+#         yield self.await_port_input(port_qin_alice)
+#         print(f"time at which bob recieved his timestamps {ns.sim_time()}")
+#         [(matching_time_stamp, _)] = port_qin_alice.rx_input().items
+#         print(matching_time_stamp)
+#         self.matching_keybits = {key: self.binary_key[key] for key in matching_time_stamp}
+#         self.list_length = len(self.matching_keybits)
 
 class EstablishKey(Protocol):
 

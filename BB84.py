@@ -85,7 +85,6 @@ class AliceProtocol(NodeProtocol):
         self.send_signal(self.time_stamp_label)
         port_qout_bob.tx_output((matching_time_stamps, None))
 
-
 class BobProtocol(NodeProtocol):
 
     n = 10000
